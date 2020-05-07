@@ -1,3 +1,5 @@
 .vscode
 main
 *.o
+a.out
+testDir/

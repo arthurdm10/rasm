@@ -70,14 +70,13 @@ write_file:
         push    rbp
         mov     rbp, rsp
 
-        push    rax
         push    rdi
         push    rsi
         push    rdx
 
         mov     rax, SYS_WRITE                  ; system call for write
         mov     rdi, [rbp + 0x10]                ;file descriptor
-        mov     rsi, [rbp + 0x18]                ; address of string to output
+        mov     rsi, [rbp + 0x18]                ; buffer address
         mov     rdx, [rbp + 0x20]                ; number of bytes
         syscall                         ; invoke operating system to do the write
         
@@ -85,7 +84,6 @@ write_file:
         pop    rdx
         pop    rsi
         pop    rdi
-        pop    rax
 
         leave
         ret
@@ -147,3 +145,29 @@ delete_file:
 
         leave
         ret
+
+
+
+file_size:
+        push    rbp
+        mov     rbp, rsp
+
+        sub     rsp, 0x90               ; stat struct is 144 bytes long
+
+        ;rbp - 0x10     file fd
+
+
+        mov     rdi, [rbp + 0x10]
+        lea     rsi, [rbp - 0x90]
+        call    fstat
+
+        cmp     rax, 0x00
+        jne     _file_size_ret
+
+        lea     rdi, [rbp - 0x90 + 0x30]        ; 0x30 = 48 st_size offset
+        mov     rax, [rdi]
+
+_file_size_ret:
+        leave
+        ret
+
