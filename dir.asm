@@ -68,7 +68,7 @@ ret_failed:
 
 
 
-
+; append the file name to directory path
 join_file_path:
         push    rbp
         mov     rbp, rsp
@@ -79,14 +79,16 @@ join_file_path:
         ;rbp+0x18 = dir path
         ;rbp+0x20 = file path
         
-        mov     rdx, [rbp + 0x18]
 
-        push    rdx
-        call    __strlen
+        mov     rdi, QWORD[rbp + 0x18]
+        call    strlen
+        
 
         cmp     rax, 0x00
         jle     _return_err
-
+        
+        mov     rdx, QWORD[rbp + 0x18]
+        
         cmp     byte[rdx + rax-1], '/'
         jne      _append_filename
         

