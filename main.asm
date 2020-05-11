@@ -28,13 +28,12 @@ section .data
 
         fmtReadFileFailed       db "Failed to read file '%s' error code %d", 0x0a, 0x00
  
+        ; where are the files you want to encrypt
         dirpath                 db "/home/frost/asm/testDir", 0x00
         
-        newLine                 db 0xa, 0x00
 
         fmtPrintFilename        db "%s",0x0a, 0x00
         fmtHex                  db "%x", 0x0a, 0x00
-        fmtDec                  db "%d", 0x0a, 0x00
 
         errFailedToMalloc       db "Failed to allocate memory", 0x0a, 0x00
         dotdotDir               db "..", 0x00

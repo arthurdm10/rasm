@@ -41,7 +41,7 @@ get_dir_content:
         push    QWORD[rbp + dirPath]
         call    open_file
                 
-        cmp     r10, 0x00
+        cmp     rax, 0x00
         jle     ret_failed
         
         mov     rdi, rax                        ;fd
